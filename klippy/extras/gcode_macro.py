@@ -140,7 +140,9 @@ class GCodeMacro:
                                         name, self.cmd_SET_GCODE_VARIABLE,
                                         desc=self.cmd_SET_GCODE_VARIABLE_help)
         self.in_script = False
-        self.variables = {}
+        self.variables = {
+            "running": False
+        }
         prefix = 'variable_'
         for option in config.get_prefix_options(prefix):
             try:
@@ -161,7 +163,11 @@ class GCodeMacro:
         self.gcode.register_command(self.rename_existing, prev_cmd, desc=pdesc)
         self.gcode.register_command(self.alias, self.cmd, desc=self.cmd_desc)
     def get_status(self, eventtime):
-        return self.variables
+        res = dict(self.variables)
+        res.update({
+            'running': self.in_script
+        })
+        return res
     cmd_SET_GCODE_VARIABLE_help = "Set the value of a G-Code macro variable"
     def cmd_SET_GCODE_VARIABLE(self, gcmd):
         variable = gcmd.get('VARIABLE')
