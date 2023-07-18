@@ -12,13 +12,23 @@ class Dialog:
         self.block_exec = False
         self.gcode.register_command("DIALOG", self.cmd_DIALOG)
         webhooks = self.printer.lookup_object('webhooks')
-        webhooks.register_endpoint("popup/ack", self._handle_ack)
-        webhooks.register_endpoint("popup/abort", self._handle_abort)
+        webhooks.register_endpoint("dialogs/ack", self._handle_ack)
+        webhooks.register_endpoint("dialogs/abort", self._handle_abort)
+
+        self.prefixes = {
+            1: '*** ', # Only "Close" is displayed (non-blocking)
+            2: '### ', # Only "OK" is displayed (blocking)
+            3: '$$$ ', # "OK" and "Cancel" are displayed (blocking)
+        }
 
     def cmd_DIALOG(self, gcmd):
         msg = gcmd.get("MSG", '')
+        mode = gcmd.get_int("MODE", 3)
         message = msg if msg is not None else ""
-        gcmd.respond_raw("$$$ %s" % message)
+        mode = mode if mode in self.prefixes.keys() else 3
+        gcmd.respond_raw("%s%s" % (self.prefixes[mode], message))
+        if mode == 1:
+            return
         reactor = self.printer.get_reactor()
         eventtime = reactor.monotonic()
         self.block_exec = True
@@ -27,6 +37,9 @@ class Dialog:
                 eventtime = reactor.pause(eventtime + 0.2)
             except:
                 gcmd.respond_raw("cannot pause")
+        if mode != 3:
+            self.abort = False
+            return
         if self.abort:
             self.abort = False
             raise gcmd.error("Aborted")
