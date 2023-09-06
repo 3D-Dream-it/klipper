@@ -1,6 +1,4 @@
-import statistics as stat
-import random
-import logging
+import numpy as np
 
 import RPi.GPIO as GPIO
 GPIO.setmode(GPIO.BCM)
@@ -19,7 +17,7 @@ class Wrapper():
         
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
-        self.hx = HX711(self.control_pin, self.data_pin, self.reactor)
+        self.hx = HX711(self.data_pin, self.control_pin, self.reactor)
         self.sample_timer = self.reactor.register_timer(self._sample_hx711, 5.)
         
         self.hx.set_scale_ratio(self.ratio)
@@ -28,26 +26,21 @@ class Wrapper():
     def _sample_hx711(self, eventtime):
         if len(self.values) > self.max_saved_values:
             self.values.pop(0)
-
-        rnd = random.uniform(-1, 1)
         value = self.hx.get_weight_mean(readings=1)
-        logging.info("HX711: %s", value)
         if value:
-            self.values.append(value / 1000)
-
-        self.weight = sum(self.values) / len(self.values) if len(self.values) > 0 else 0
-        
+            self.values.append(value)
+            self.weight = sum(self.values) / len(self.values) if len(self.values) > 0 else 0
         measured_time = self.reactor.monotonic()
         return measured_time + 5.
 
     def empty_calibration(self):
-        if self.hx.zero(readings=30):
-            offset = self.hx.get_current_offset()
-            config = self.printer.lookup_object('configfile')
-            config.set(self.name, 'offset', offset)
+        self.hx.zero(readings=30)
+        offset = self.hx.get_current_offset()
+        config = self.printer.lookup_object('configfile')
+        config.set(self.name, 'offset', offset)
 
     def weight_calibration(self, known_weight):
-        value = float(known_weight)
+        value = float(known_weight) # in kilograms
         data = self.hx.get_data_mean(readings=30)
         self.hx.set_scale_ratio( data / value )
         config = self.printer.lookup_object('configfile')
@@ -55,6 +48,9 @@ class Wrapper():
 
     def get_weight(self):
         return self.weight
+    
+    def get_values(self):
+        return self.values
 
 def load_config_prefix(config):
     return Wrapper(config)
@@ -363,10 +359,10 @@ class HX711:
             if self._debug_mode:
                 print('data_list: {}'.format(data_list))
                 print('filtered_data list: {}'.format(filtered_data))
-                print('data_mean:', stat.mean(filtered_data))
-            data_mean = stat.mean(filtered_data)
+                print('data_mean:', np.mean(filtered_data))
+            data_mean = np.mean(filtered_data)
         else:
-            data_mean = stat.mean(data_list)
+            data_mean = np.mean(data_list)
         self._save_last_raw_data(backup_channel, backup_gain, data_mean)
         return int(data_mean)
 
@@ -494,9 +490,9 @@ class HX711:
         if not data:
             return []
 
-        median = stat.median(data)
+        median = np.median(data)
         dists_from_median = [(abs(measurement - median)) for measurement in data]
-        stdev = stat.stdev(dists_from_median)
+        stdev = np.std(dists_from_median)
         if stdev:
             ratios_to_stdev = [(dist / stdev) for dist in dists_from_median]
         else:

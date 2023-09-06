@@ -13,9 +13,9 @@ class Scale():
     def get_status(self, eventtime):
         return {
             "weight": self.get_weight(),
-            "tare": self.tare,
-            "diameter": self.diameter,
-            "density": self.density,
+            "tare": float(self.tare),
+            "diameter": float(self.diameter),
+            "density": float(self.density),
         }
     
     def empty_calibration(self):
