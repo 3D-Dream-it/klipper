@@ -292,6 +292,8 @@ class ManualProbeHelper:
             kin_pos = self.get_kinematics_pos()
             mpresult = create_probe_result(kin_pos)
         self.finalize_callback(mpresult)
+        if success:
+            self.gcode.run_script_from_command("G91\nG1 Z+25 F1500")
 
 def load_config(config):
     return ManualProbe(config)
