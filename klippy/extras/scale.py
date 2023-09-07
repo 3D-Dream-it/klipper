@@ -1,10 +1,32 @@
 class Scale():
     def __init__(self, config):
+        self.printer = config.get_printer()
         names = config.getlist('sensors')
-        self.sensors = [config.get_printer().lookup_object('hx711 ' + n) for n in names]
+        self.sensors = [self.printer.lookup_object('hx711 ' + n) for n in names]
         self.tare = config.getfloat('tare', 0)
         self.diameter = config.getfloat('diameter', 0)
         self.density = config.getfloat('density', 0)
+        
+        self.reactor = self.printer.get_reactor()
+        self.chekc_spool_timer = self.reactor.register_timer(self._check_spool_timer, 5.)
+
+    def _check_spool_timer(self, eventtime):
+        all_values = [s.get_values() for s in self.sensors]
+        i_stop = min([len(x) for x in all_values])
+        mean_values = []
+        for i in range(i_stop):
+            temp = sum([x[i] for x in all_values])
+            mean_values.append(temp / len(all_values))
+        
+        if len(mean_values) > 1 and (mean_values[-2] - mean_values[-1]) > self.tare * .8:
+            gcode = self.printer.lookup_object('gcode')
+            gcode._respond_error("Errore: La bobina e' stata sollevata!")
+            print_stats = self.printer.lookup_object('print_stats')
+            if print_stats and print_stats.get_status(eventtime)['state'] == 'printing':
+                gcode.run_script_from_command("PAUSE")
+
+        measured_time = self.reactor.monotonic()
+        return measured_time + 5.
 
     def get_weight(self):
         values = [s.get_weight() for s in self.sensors]
