@@ -16,29 +16,23 @@ class Wrapper():
         self.ratio = config.getfloat('ratio')
         self.offset = config.getint('offset')
         self.max_saved_values = config.getint('max_saved_values')
-        
+
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
-        self.hx = HX711(self.control_pin, self.data_pin, self.reactor)
-        self.sample_timer = self.reactor.register_timer(self._sample_hx711, 5.)
-        
+        self.hx = HX711(self.data_pin, self.control_pin, self.reactor)
+
         self.hx.set_scale_ratio(self.ratio)
         self.hx.set_offset(self.offset)
 
-    def _sample_hx711(self, eventtime):
+    def sample_hx711(self):
         if len(self.values) > self.max_saved_values:
             self.values.pop(0)
 
-        rnd = random.uniform(-1, 1)
         value = self.hx.get_weight_mean(readings=1)
         logging.info("HX711: %s", value)
-        if value:
-            self.values.append(value / 1000)
-
-        self.weight = sum(self.values) / len(self.values) if len(self.values) > 0 else 0
-        
-        measured_time = self.reactor.monotonic()
-        return measured_time + 5.
+        if value is not None:
+            self.values.append(value)
+            self.weight = sum(self.values) / len(self.values) if len(self.values) > 0 else 0
 
     def empty_calibration(self):
         if self.hx.zero(readings=30):
@@ -49,13 +43,23 @@ class Wrapper():
     def weight_calibration(self, known_weight):
         value = float(known_weight)
         data = self.hx.get_data_mean(readings=30)
-        self.hx.set_scale_ratio( data / value )
+        self.hx.set_scale_ratio(data / value)
         config = self.printer.lookup_object('configfile')
         config.set(self.name, 'ratio', self.hx.get_current_scale_ratio())
 
-    def get_weight(self):
-        return self.weight
+    def get_weight(self, average=False):
+        if not self.values:
+            return 0
+        return self.weight if average else self.values[-1]
 
+    def get_values(self):
+        return self.values
+
+    def get_status(self, eventtime):
+        return {
+            "weight": self.weight,
+            "values": self.values
+        }
 def load_config_prefix(config):
     return Wrapper(config)
 
