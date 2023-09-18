@@ -18,20 +18,17 @@ class Wrapper():
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
         self.hx = HX711(self.data_pin, self.control_pin, self.reactor)
-        self.sample_timer = self.reactor.register_timer(self._sample_hx711, 5.)
         
         self.hx.set_scale_ratio(self.ratio)
         self.hx.set_offset(self.offset)
 
-    def _sample_hx711(self, eventtime):
+    def sample_hx711(self):
         if len(self.values) > self.max_saved_values:
             self.values.pop(0)
         value = self.hx.get_weight_mean(readings=1)
         if value:
             self.values.append(value)
             self.weight = sum(self.values) / len(self.values) if len(self.values) > 0 else 0
-        measured_time = self.reactor.monotonic()
-        return measured_time + 5.
 
     def empty_calibration(self):
         self.hx.zero(readings=30)
@@ -46,11 +43,17 @@ class Wrapper():
         config = self.printer.lookup_object('configfile')
         config.set(self.name, 'ratio', self.hx.get_current_scale_ratio())
 
-    def get_weight(self):
-        return self.weight
+    def get_weight(self, average=False):
+        return self.weight if average else self.values[-1]
     
     def get_values(self):
         return self.values
+
+    def get_status(self, eventtime):
+        return {
+            "weight": self.weight,
+            "values": self.values
+        }
 
 def load_config_prefix(config):
     return Wrapper(config)

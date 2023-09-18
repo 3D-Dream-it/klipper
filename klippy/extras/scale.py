@@ -1,3 +1,5 @@
+import logging
+
 class Scale():
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -6,38 +8,47 @@ class Scale():
         self.tare = config.getfloat('tare', 0)
         self.diameter = config.getfloat('diameter', 0)
         self.density = config.getfloat('density', 0)
+
+        self.lifted_filament_alarm = config.getboolean('lifted_filament_alarm', default=False)
         
+        self.gcode = self.printer.lookup_object('gcode')
         self.reactor = self.printer.get_reactor()
-        self.chekc_spool_timer = self.reactor.register_timer(self._check_spool_timer, 5.)
+        self.timer = self.reactor.register_timer(self._measure_n_check_timer, 5.)
 
-    def _check_spool_timer(self, eventtime):
-        all_values = [s.get_values() for s in self.sensors]
-        i_stop = min([len(x) for x in all_values])
-        mean_values = []
-        for i in range(i_stop):
-            temp = sum([x[i] for x in all_values])
-            mean_values.append(temp / len(all_values))
-        
-        if len(mean_values) > 1 and (mean_values[-2] - mean_values[-1]) > self.tare * .8:
-            gcode = self.printer.lookup_object('gcode')
-            gcode._respond_error("Errore: La bobina e' stata sollevata!")
-            print_stats = self.printer.lookup_object('print_stats')
-            if print_stats and print_stats.get_status(eventtime)['state'] == 'printing':
-                gcode.run_script_from_command("PAUSE")
+    def _measure_n_check_timer(self, eventtime):
+        # measuring
+        for s in self.sensors:
+            s.sample_hx711()
 
+        # checking
+        if self.lifted_filament_alarm:
+            all_values = [s.get_values() for s in self.sensors]
+            i_stop = min([len(x) for x in all_values])
+            mean_values = []
+            for i in range(i_stop):
+                temp = sum([x[i] for x in all_values])
+                mean_values.append(temp / len(all_values))
+                
+            if len(mean_values) > 1 and mean_values[-2] > self.tare and mean_values[-1] < 0.1:
+                self.gcode._respond_error("Errore: La bobina e' stata sollevata!")
+                if self.is_printing(eventtime):
+                    self.gcode.run_script_from_command("PAUSE")
+
+        # next execution time
         measured_time = self.reactor.monotonic()
         return measured_time + 5.
 
-    def get_weight(self):
-        values = [s.get_weight() for s in self.sensors]
+    def get_weight(self, eventtime):
+        values = [s.get_weight(average=self.is_printing(eventtime)) for s in self.sensors]
         return sum(values) / len(values) if len(values) > 0 else 0
 
     def get_status(self, eventtime):
         return {
-            "weight": self.get_weight(),
+            "weight": self.get_weight(eventtime),
             "tare": float(self.tare),
             "diameter": float(self.diameter),
             "density": float(self.density),
+            "lifted_filament_alarm": self.lifted_filament_alarm
         }
     
     def empty_calibration(self):
@@ -47,6 +58,10 @@ class Scale():
     def weight_calibration(self, value):
         for s in self.sensors:
             s.weight_calibration(value)
+
+    def is_printing(self, eventtime):
+        print_stats = self.printer.lookup_object('print_stats')
+        return print_stats and print_stats.get_status(eventtime)['state'] == 'printing'
 
 class ScaleMaster():
     def __init__(self, config):
