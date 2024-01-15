@@ -3,7 +3,7 @@
 # Copyright (C) 2018  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import os, logging, io
+import os, logging, io, json, re
 
 VALID_GCODE_EXTS = ['gcode', 'g', 'gco']
 
@@ -40,6 +40,12 @@ class VirtualSD:
         self.gcode.register_command(
             "SDCARD_PRINT_FILE", self.cmd_SDCARD_PRINT_FILE,
             desc=self.cmd_SDCARD_PRINT_FILE_help)
+        self.gcode.register_command(
+            "SAVE_PROGRESS", self.cmd_SAVE_PROGRESS,
+            desc=self.cmd_SAVE_PROGRESS_help)
+        self.gcode.register_command(
+            "RESUME_INTERRUPTED", self.cmd_RESUME_INTERRUPTED,
+            desc=self.cmd_RESUME_INTERRUPTED_help)
     def handle_shutdown(self):
         if self.work_timer is not None:
             self.must_pause_work = True
@@ -209,12 +215,81 @@ class VirtualSD:
             return
         gcmd.respond_raw("SD printing byte %d/%d"
                          % (self.file_position, self.file_size))
+    cmd_SAVE_PROGRESS_help = "save the file progress into a file in order to recover a print after a power failure"
+    def cmd_SAVE_PROGRESS(self, gcmd):
+        resurrect = os.path.join(self.sdcard_dirname, '.resurrect')
+        current_print = self.file_path()
+        if current_print:
+            with open(resurrect, 'w') as f:
+                json.dump({
+                    "file_position": self.file_position,
+                    "filename": current_print
+                }, f)
+        else:
+            gcmd.respond_raw("Can't save the progress, no files are selected!")
+    cmd_RESUME_INTERRUPTED_help = "loads the file progress from a file and resume a print after a power failure"
+    def cmd_RESUME_INTERRUPTED(self, gcmd):
+        resurrect = os.path.join(self.sdcard_dirname, '.resurrect')
+        if not os.path.exists(resurrect):
+            raise gcmd.error('There is no interrupted print to resume')
+        with open(resurrect, 'r') as f:
+            data = json.load(f)
+            pos = data['file_position']
+            filename = data['filename']
+        os.remove(resurrect)
+        gcmd.respond_raw('Stampa precendetemente interrotta: ' + os.path.basename(filename))
+        restore_state_script = ['G28'] + self._create_restore_state_script(filename, pos)
+
+        gcmd.respond_raw('Running restore script:\n'+str(restore_state_script))
+        self.gcode._process_commands(restore_state_script)
+
+        self._reset_file()
+        self._load_file(gcmd, os.path.basename(filename))
+        self.set_file_position(pos)
+        self.do_resume()
     def get_file_position(self):
         return self.next_file_position
     def set_file_position(self, pos):
         self.next_file_position = pos
     def is_cmd_from_sd(self):
         return self.cmd_from_sd
+    def _create_restore_state_script(self, filename, size):
+        all_re = "|".join([
+            r"((M106) S(\d+) P(\d+))",
+            r"((M104) S(\d+) T(\d+))",
+            r"((M109) S(\d+) T(\d+))",
+            r"((M140) S(\d+))",
+            r"((M190) S(\d+))",
+            r"((M141) S(\d+))",
+            r"((M191) S(\d+))"
+        ])
+        with open(filename, 'r') as f:
+            haystack = f.read(size)
+        raw_state = {}
+        for match in re.findall(all_re, haystack):
+            for match in re.findall(all_re, haystack):
+                match = [x for x in match if x != '']
+                match.pop(0)
+                if match[0] == 'M106':
+                    p = match[2]
+                    raw_state['fan%s_speed' % p] = 'M106 S%s P%s' % (match[1], p)
+                elif match[0] == 'M104':
+                    t = match[2]
+                    raw_state['tool%s_temp' % t] = 'M109 S%s T%s' % (match[1], t)
+                elif match[0] == 'M109':
+                    t = match[2]
+                    raw_state['tool%s_temp' % t] = 'M109 S%s T%s' % (match[1], t)
+                elif match[0] == 'M140':
+                    raw_state['bed_temp'] = 'M190 S%s' % match[1]
+                elif match[0] == 'M190':
+                    raw_state['bed_temp'] = 'M190 S%s' % match[1]
+                elif match[0] == 'M141':
+                    raw_state['chamber_temp'] = 'M141 S%s' % match[1]
+                elif match[0] == 'M191':
+                    raw_state['chamber_temp'] = 'M141 S%s' % match[1]
+
+        return [v for k, v in raw_state.items()]
+            
     # Background work timer
     def work_handler(self, eventtime):
         logging.info("Starting SD card print (position %d)", self.file_position)
@@ -274,6 +349,7 @@ class VirtualSD:
                 break
             self.cmd_from_sd = False
             self.file_position = self.next_file_position
+            self.cmd_SAVE_PROGRESS(self.gcode)
             # Do we need to skip around?
             if self.next_file_position != next_file_position:
                 try:
