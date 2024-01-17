@@ -209,7 +209,9 @@ class GCodeMove:
     cmd_SAVE_GCODE_STATE_help = "Save G-Code coordinate state"
     def cmd_SAVE_GCODE_STATE(self, gcmd):
         state_name = gcmd.get('NAME', 'default')
-        self.saved_states[state_name] = {
+        self.saved_states[state_name] = self.create_gcode_state()
+    def create_gcode_state(self):
+        return {
             'absolute_coord': self.absolute_coord,
             'absolute_extrude': self.absolute_extrude,
             'base_position': list(self.base_position),
@@ -218,6 +220,8 @@ class GCodeMove:
             'speed': self.speed, 'speed_factor': self.speed_factor,
             'extrude_factor': self.extrude_factor,
         }
+    def add_gcode_state(self, state, state_name):
+        self.saved_states[state_name] = state
     cmd_RESTORE_GCODE_STATE_help = "Restore a previously saved G-Code state"
     def cmd_RESTORE_GCODE_STATE(self, gcmd):
         state_name = gcmd.get('NAME', 'default')
