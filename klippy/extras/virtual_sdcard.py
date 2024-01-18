@@ -385,7 +385,6 @@ class VirtualSD:
                 break
             self.cmd_from_sd = False
             self.file_position = self.next_file_position
-            self.cmd_SAVE_PROGRESS(self.gcode)
             # Do we need to skip around?
             if self.next_file_position != next_file_position:
                 try:
