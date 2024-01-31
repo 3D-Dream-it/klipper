@@ -4,6 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import os, logging, io, json, re
+from kinematics.extruder import PrinterExtruder
 
 VALID_GCODE_EXTS = ['gcode', 'g', 'gco']
 
@@ -21,8 +22,10 @@ class VirtualSD:
         raw_script = config.get('pre_resurrection', default='G28')
         self.pre_resurrection = raw_script.strip() + '\n'
         raw_script = config.get('post_resurrection', default='')
-        self.post_resurrection = raw_script.strip()
+        self.post_resurrection = '\n' + raw_script.strip()
         self.resurrect_file = os.path.join(self.sdcard_dirname, '.resurrect')
+        self.available_extruders = [n for n, o in self.printer.lookup_objects()
+                   if isinstance(o, PrinterExtruder)]
         # Print Stat Tracking
         self.print_stats = self.printer.load_object(config, 'print_stats')
         # Work timer
@@ -125,6 +128,9 @@ class VirtualSD:
             self.must_pause_work = True
             while self.work_timer is not None and not self.cmd_from_sd:
                 self.reactor.pause(self.reactor.monotonic() + .001)
+    def force_pause(self):
+        if self.work_timer is not None:
+            self.must_pause_work = True
     def do_resume(self):
         if self.work_timer is not None:
             raise self.gcode.error("SD busy")
@@ -230,22 +236,24 @@ class VirtualSD:
                          % (self.file_position, self.file_size))
     cmd_SAVE_PROGRESS_help = "save the file progress into a file in order to recover a print after a power failure"
     def cmd_SAVE_PROGRESS(self, gcmd):
-        resurrect = os.path.join(self.sdcard_dirname, '.resurrect')
+        gcode_state = self.gcode_move.create_gcode_state()
         current_print = self.file_path()
         if current_print:
-            with open(resurrect, 'w') as f:
+            with open(self.resurrect_file, 'w') as destination_file:
                 json.dump({
                     "file_position": self.get_file_position(),
                     "filename": current_print,
-                    "gcode_state": self.gcode_move.create_gcode_state(),
+                    "gcode_state": gcode_state,
                     "extruder": self.get_toolhead().get_extruder().get_name()
-                }, f)
+                }, destination_file)
+                destination_file.flush()
+                destination_file.close()
         else:
-            gcmd.respond_raw("Can't save the progress, no files are selected!")
+            gcmd.respond_raw("!! Can't save the progress, no files are selected!")
     cmd_RESUME_INTERRUPTED_help = "loads the file progress from a file and resume a print after a power failure"
     def handle_resume_interrupted(self, web_request):
         if not os.path.exists(self.resurrect_file):
-            self.gcode.respond_raw('There is no interrupted print to resume')
+            self.gcode.respond_raw('!! There is no interrupted print to resume')
             return
         with open(self.resurrect_file, 'r') as f:
             try:
@@ -255,18 +263,24 @@ class VirtualSD:
                 extruder = data['extruder']
                 gcode_state = data['gcode_state']
             except:
-                self.gcode.respond_raw("Can't resume the print")
+                self.gcode.respond_raw("!! Can't resume the print")
                 return
 
         self.gcode.respond_raw('Stampa precendetemente interrotta: ' + os.path.basename(filename))
-        self.gcode.run_script('ACTIVATE_EXTRUDER EXTRUDER=%s' % extruder)
-        restore_state_script = self.pre_resurrection + self._create_restore_state_script(filename, pos) + self.post_resurrection
+        try:
+            self.gcode.run_script('T' + self.available_extruders.index(extruder))
+        except:
+            logging.info(extruder + ' not found in the available ones: ' + str(self.available_extruders))
+        raw_state = self._create_restore_state_script(filename, pos)
+        move_mode = raw_state.pop('mode')
+        restore_temp_script = '\n'.join([v for k, v in raw_state.items()])
+        restore_state_script = self.pre_resurrection + restore_temp_script + self.post_resurrection
         self.gcode.respond_raw('Running restore script:\n' + str(restore_state_script))
         self.gcode.run_script(restore_state_script)
 
         self.gcode.respond_raw('Ripristino posizione')
         self.gcode_move.add_gcode_state(gcode_state, 'RESURRECT')
-        self.gcode.run_script('RESTORE_GCODE_STATE NAME=RESURRECT MOVE=1')
+        self.gcode.run_script('RESTORE_GCODE_STATE NAME=RESURRECT MOVE=1 MOVE_SPEED=100.\n'+move_mode)
 
         self._reset_file()
         self._load_file(self.gcode, os.path.basename(filename))
@@ -286,8 +300,8 @@ class VirtualSD:
     def _create_restore_state_script(self, filename, size):
         all_re = "|".join([
             r"((M106) S(\d+) P(\d+))",
-            r"((M104) S(\d+) T(\d+))",
-            r"((M109) S(\d+) T(\d+))",
+            r"((M104) S(\d+)( T(\d+))?)",
+            r"((M109) S(\d+)( T(\d+))?)",
             r"((M140) S(\d+))",
             r"((M190) S(\d+))",
             r"((M141) S(\d+))",
@@ -306,11 +320,17 @@ class VirtualSD:
                     p = match[2]
                     raw_state['fan%s_speed' % p] = 'M106 S%s P%s' % (match[1], p)
                 elif match[0] == 'M104':
-                    t = match[2]
-                    raw_state['tool%s_temp' % t] = 'M109 S%s T%s' % (match[1], t)
+                    if len(match) == 2:
+                        raw_state['tool_temp'] = 'M109 S%s' % match[1]
+                    else:
+                        t = match[3]
+                        raw_state['tool%s_temp' % t] = 'M109 S%s T%s' % (match[1], t)
                 elif match[0] == 'M109':
-                    t = match[2]
-                    raw_state['tool%s_temp' % t] = 'M109 S%s T%s' % (match[1], t)
+                    if len(match) == 2:
+                        raw_state['tool_temp'] = 'M109 S%s' % match[1]
+                    else:
+                        t = match[3]
+                        raw_state['tool%s_temp' % t] = 'M109 S%s T%s' % (match[1], t)
                 elif match[0] == 'M140':
                     raw_state['bed_temp'] = 'M190 S%s' % match[1]
                 elif match[0] == 'M190':
@@ -320,11 +340,11 @@ class VirtualSD:
                 elif match[0] == 'M191':
                     raw_state['chamber_temp'] = 'M141 S%s' % match[1]
                 elif match[0] == 'G91':
-                    raw_state['mode'] = 'G90'
-                elif match[0] == 'G90':
                     raw_state['mode'] = 'G91'
+                elif match[0] == 'G90':
+                    raw_state['mode'] = 'G90'
 
-        return '\n'.join([v for k, v in raw_state.items()])
+        return raw_state
             
     # Background work timer
     def work_handler(self, eventtime):
