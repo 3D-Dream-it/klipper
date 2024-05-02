@@ -128,6 +128,7 @@ class VirtualSD:
             self.must_pause_work = True
             while self.work_timer is not None and not self.cmd_from_sd:
                 self.reactor.pause(self.reactor.monotonic() + .001)
+            self.printer.send_event("virtual_sdcard:paused")
     def force_pause(self):
         if self.work_timer is not None:
             self.must_pause_work = True
@@ -138,12 +139,14 @@ class VirtualSD:
         self.remove_resurrect_file()
         self.work_timer = self.reactor.register_timer(
             self.work_handler, self.reactor.NOW)
+        self.printer.send_event("virtual_sdcard:printing")
     def do_cancel(self):
         if self.current_file is not None:
             self.do_pause()
             self.current_file.close()
             self.current_file = None
             self.print_stats.note_cancel()
+            self.printer.send_event("virtual_sdcard:cancelled")
         self.file_position = self.file_size = 0
     # G-Code commands
     def cmd_error(self, gcmd):
@@ -375,6 +378,7 @@ class VirtualSD:
                     self.current_file = None
                     logging.info("Finished SD card print")
                     self.gcode.respond_raw("Done printing file")
+                    self.printer.send_event("virtual_sdcard:ended")
                     break
                 lines = data.split('\n')
                 lines[0] = partial_input + lines[0]
