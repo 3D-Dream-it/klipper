@@ -1,6 +1,6 @@
-import smtplib, subprocess, socket
-from email.message import EmailMessage
-from jinja2 import Template
+import smtplib, socket, logging, os
+from base64 import b64encode as b64e, b64decode as b64d
+from email.mime.text import MIMEText
 
 class EmailNotifier:
     def __init__(self, config):
@@ -11,46 +11,39 @@ class EmailNotifier:
         self.printer_name = config.get("printer_name", socket.gethostname())
 
         self.smtp_password = None
+        self.pass_path = os.path.expanduser("~/.email_notifier")
         self.load_password()
 
         self.printer = config.get_printer()
-        self.print_stats = self.printer.lookup_object("print_stats")
-        self.printer.register_event_handler("klippy:ready", self.handle_printer_ready)
-        self.printer.register_event_handler("virtual_sdcard:printing", self.handle_print_start)
-        self.printer.register_event_handler("virtual_sdcard:paused", self.handle_print_paused)
-        self.printer.register_event_handler("virtual_sdcard:ended", self.handle_print_ended)
-        self.printer.register_event_handler("virtual_sdcard:cancelled", self.handle_print_cancel)
-
         webhooks = self.printer.lookup_object("webhooks")
         webhooks.register_endpoint("email", self.handle_password)
+        self.gcode = self.printer.lookup_object("gcode")
+        self.gcode.register_command("SEND_EMAIL", self.cmd_SEND_EMAIL,
+                               desc="Send an email notification")
+
+    def cmd_SEND_EMAIL(self, gcmd):
+        subject = "La macchina " + self.printer_name + " ha bisogno di assistenza"
+        self.send_email(subject)
+        gcmd.respond_raw("Email inviata")
 
     def load_password(self):
-        result = subprocess.run(["pass", "show", "email_notifier"], capture_output=True)
-        if result.returncode == 0:
-            self.smtp_password = result.stdout.decode().strip()
+        try:
+            with open(self.pass_path, "r") as f:
+                raw_data = f.read().strip()
+                self.smtp_password = b64d(raw_data)
+        except Exception as e:
+            logging.error("Failed to load password")
 
-    def store_password(self, password: str):
-        result = subprocess.run(
-            ["pass", "insert", "email_notifier"],
-            capture_output=True,
-            input=password.encode(),
-        )
-        return result.returncode == 0
-
-    def handle_printer_ready(self):
-        self.send_email("La stampante è pronta")
-
-    def handle_print_start(self):
-        self.send_email("Una stampa è stata avviata")
-
-    def handle_print_paused(self):
-        self.send_email("La stampa è pausa")
-
-    def handle_print_ended(self):
-        self.send_email("La stampa è terminata")
-
-    def handle_print_cancel(self):
-        self.send_email("La stampa è stata cancellata")
+    def store_password(self, password):
+        try:
+            if os.path.exists(self.pass_path):
+                os.remove(self.pass_path)
+            with open(self.pass_path, "w") as f:
+                f.write(b64e(password))
+            return True
+        except Exception as e:
+            logging.error("Failed to save password: " + str(e))
+            return False
 
     def handle_password(self, web_request):
         password = web_request.get_str("password", default=None)
@@ -70,18 +63,23 @@ class EmailNotifier:
             "target_email": self.target_email,
         }
 
-    def send_email(self, subject: str):
-        msg = EmailMessage()
-        msg["Subject"] = subject
-        msg["From"] = f"{self.printer_name} <{self.smtp_user}>"
-        msg["To"] = self.target_email
-        msg.set_content("Ricevi questa email perché hai attivato le notifiche email.")
+    def send_email(self, subject):
+        if not self.smtp_password:
+            raise self.gcode.error("Password not set")
 
-        with smtplib.SMTP_SSL(self.smtp_server, self.smtp_port) as smtp:
-            if self.smtp_password == None:
-                return
-            smtp.login(self.smtp_user, self.smtp_password)
-            smtp.send_message(msg)
+        msg = MIMEText("Ricevi questa email in quanto hai attivato le notifiche email.", 'plain')
+        msg["Subject"] = subject
+        msg["From"] = self.printer_name+" <"+self.smtp_user+">"
+        msg["To"] = self.target_email
+
+        try:
+            server = smtplib.SMTP_SSL(self.smtp_server, self.smtp_port)
+            server.login(self.smtp_user, self.smtp_password)
+            body_text = msg.as_string()
+            server.sendmail(self.smtp_user, self.target_email, body_text)
+        except Exception as e:
+            logging.error("Error sending email: " + str(e))
+            raise self.gcode.error("Error sending email: " + str(e))
 
 def load_config(config):
     return EmailNotifier(config)
