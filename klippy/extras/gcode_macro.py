@@ -72,6 +72,7 @@ class PrinterGCodeMacro:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.env = jinja2.Environment('{%', '%}', '{', '}')
+        self.macros = []
     def load_template(self, config, option, default=None):
         name = "%s:%s" % (config.get_name(), option)
         if default is None:
@@ -102,6 +103,16 @@ class PrinterGCodeMacro:
             'action_raise_error': self._action_raise_error,
             'action_call_remote_method': self._action_call_remote_method,
         }
+    def get_status(self, eventtime):
+        running_macros = []
+        for macro in self.macros:
+            if macro.in_script:
+                running_macros.append(macro.alias)
+        return {
+            'running_macros': running_macros
+        }
+    def register(self, gcode_macro):
+        self.macros.append(gcode_macro)
 
 def load_config(config):
     return PrinterGCodeMacro(config)
@@ -121,6 +132,7 @@ class GCodeMacro:
         self.alias = name.upper()
         self.printer = printer = config.get_printer()
         gcode_macro = printer.load_object(config, 'gcode_macro')
+        gcode_macro.register(self)
         self.template = gcode_macro.load_template(config, 'gcode')
         self.gcode = printer.lookup_object('gcode')
         self.rename_existing = config.get("rename_existing", None)
